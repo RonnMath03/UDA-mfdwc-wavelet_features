@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-PATH = '/DATA/s23103/TAU-urban-acoustic-scenes-2020-mobile-development'
+PATH = '/DATA/G3/Datasets/archive/Original_split/TAU-urban-acoustic-scenes-2020-mobile-development'
 
 
 label_keys = {'airport': 0, 'shopping_mall': 1, 'park': 2, 'street_pedestrian': 3,
