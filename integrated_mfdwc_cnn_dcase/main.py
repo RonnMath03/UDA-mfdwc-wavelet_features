@@ -20,7 +20,7 @@ from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 # --- CHANGED: Configuration and Hyperparameters updated for new data loading logic ---
 METHOD = 'cnn' # 'CDAN' or 'CDAN-E'
 # Path to the directory where the audio subfolders are located
-PATH = './TAU-urban-acoustic-scenes-2020-mobile-development'
+PATH = '/DATA/G3/Datasets/archive/Original_split/TAU-urban-acoustic-scenes-2020-mobile-development'  # Dataset path for .110 PC
 output_csv_path = 'training_results_dcase_cnn.csv'
 
 # Define the specific source and target devices to be used from the datasets
@@ -66,7 +66,7 @@ def test(mfdwc_extractor, feature_extractor, classifier, dataloader, device):
 
             mfdwc_features = mfdwc_extractor(data)  # (batch, 1, 90, n_frames)
             
-            features = feature_extractor(data)
+            features = feature_extractor(mfdwc_features)
             outputs = classifier(features)
             _, predicted = torch.max(outputs.data, 1)
             total += target.size(0)
@@ -180,9 +180,9 @@ def train():
                 src_mfdwc = mfdwc_extractor(src)  # (batch, 1, 90, n_frames)
                 tgt_mfdwc = mfdwc_extractor(tgt)  # (batch, 1, 90, n_frames)
 
-            feat_source = feature_extractor(src)
+            feat_source = feature_extractor(src_mfdwc)
             pred_source = classifier(feat_source)
-            feat_target = feature_extractor(tgt)
+            feat_target = feature_extractor(tgt_mfdwc)
             pred_target = classifier(feat_target)
 
             cls_loss = criterion_cls(pred_source, labels)
