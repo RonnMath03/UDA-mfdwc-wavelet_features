@@ -132,11 +132,10 @@ def train():
         del feature_extractor_temp, dummy_audio, dummy_mfdwc, dummy_features
     
     print(f"Calculated flattened size: {flattened_size}")
-    
+
     # Models for CNN backbone 
-    feature_dim = 384
     feature_extractor = FeatureExtractor().to(device)
-    classifier = Classifier().to(device)
+    classifier = Classifier(flattened_size=flattened_size).to(device)
 
 
     # Optimizers
