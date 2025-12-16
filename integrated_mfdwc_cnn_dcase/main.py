@@ -121,6 +121,18 @@ def train():
         return_temporal=True  # Return (batch, 1, 90, n_frames) for CNN
     ).to(device)
     
+    # Calculate correct flattened size
+    with torch.no_grad():
+        # Create dummy input: 10 seconds of audio
+        dummy_audio = torch.randn(1, TARGET_SAMPLE_RATE * 10).to(device)
+        dummy_mfdwc = mfdwc_extractor(dummy_audio)  # (1, 1, 90, n_frames)
+        feature_extractor_temp = FeatureExtractor().to(device)
+        dummy_features = feature_extractor_temp(dummy_mfdwc)
+        flattened_size = dummy_features.shape[1]
+        del feature_extractor_temp, dummy_audio, dummy_mfdwc, dummy_features
+    
+    print(f"Calculated flattened size: {flattened_size}")
+    
     # Models for CNN backbone 
     feature_dim = 384
     feature_extractor = FeatureExtractor().to(device)
