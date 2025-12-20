@@ -147,6 +147,14 @@ def train():
     # --- NEW: Setup for logging results ---
     results_log = []
 
+    # NEW: Track best models
+    best_target_acc = 0.0
+    best_epoch = 0
+
+    # NEW: Create subdirectory for this experiment
+    experiment_dir = os.path.join(save_dir, f"{src_device}-{tgt_device}")
+    os.makedirs(experiment_dir, exist_ok=True)
+
 
     max_iter = NUM_EPOCHS * min(len(src_loader), len(tgt_loader))
     iter_num = 0
@@ -214,7 +222,6 @@ def train():
             iter_num += 1
             total_cls_loss += cls_loss.item()
 
-        timestamp = datetime.now()
         
         # --- NEW: Epoch-end logging and evaluation ---
         avg_cls_loss = total_cls_loss / num_batches
@@ -238,7 +245,7 @@ def train():
             f"  -> Avg Grad Norms | Feature Extractor: {avg_f_grad:.4f}, "
             f"Classifier: {avg_c_grad:.4f}, Discriminator: {avg_d_grad:.4f}\n"
         )
-        feature_extractor.state_dict()
+
         # Append results to log
         epoch_results = {
             'epoch': epoch,
@@ -251,16 +258,53 @@ def train():
             'classifier_grad_norm': avg_c_grad,
             'discriminator_grad_norm': avg_d_grad
         }
-        if epoch % 10 == 0 : 
-            results_log.append(epoch_results)
-            torch.save(feature_extractor.state_dict(), f"{save_dir}/FE_{timestamp}.pth")
-            torch.save(classifier.state_dict() , f"{save_dir}/CL_{timestamp}.pth")
-            # Save to CSV after each epoch
-            pd.DataFrame(results_log).to_csv(output_csv_path, index=False)
+        results_log.append(epoch_results)
+        
+        # NEW: Save best model based on target accuracy
+        if target_acc > best_target_acc:
+            best_target_acc = target_acc
+            best_epoch = epoch
+            
+            # Save feature extractor separately
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': feature_extractor.state_dict(),
+                'target_accuracy': target_acc,
+                'source_accuracy': source_acc
+            }, os.path.join(experiment_dir, f"best_FE_{src_device}-{tgt_device}.pth"))
+            
+            # Save classifier separately
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': classifier.state_dict(),
+                'target_accuracy': target_acc,
+                'source_accuracy': source_acc
+            }, os.path.join(experiment_dir, f"best_CL_{src_device}-{tgt_device}.pth"))
+            
+            print(f"  -> Saved best model with target accuracy: {target_acc:.2f}%")
+        
+        # NEW: Always save latest model (overwrites previous)
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': feature_extractor.state_dict(),
+            'target_accuracy': target_acc,
+            'source_accuracy': source_acc
+        }, os.path.join(experiment_dir, f"latest_FE_{src_device}-{tgt_device}.pth"))
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': classifier.state_dict(),
+            'target_accuracy': target_acc,
+            'source_accuracy': source_acc
+        }, os.path.join(experiment_dir, f"latest_CL_{src_device}-{tgt_device}.pth"))
+ 
+        # Save CSV every epoch
+        csv_path = os.path.join(experiment_dir, f"training_results_mfdwc-dcase-cnn_{src_device}-{tgt_device}.csv")
+        pd.DataFrame(results_log).to_csv(csv_path, index=False)
 
-
-    print(f"Training finished. Results saved to {output_csv_path}")
-
+    print(f"\nTraining finished!")
+    print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
+    print(f"Results saved to {experiment_dir}")
 
 if __name__ == '__main__':
     train()
