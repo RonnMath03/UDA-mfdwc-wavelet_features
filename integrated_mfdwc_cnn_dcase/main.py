@@ -155,10 +155,8 @@ def train():
     experiment_dir = os.path.join(save_dir, f"{src_device}-{tgt_device}")
     os.makedirs(experiment_dir, exist_ok=True)
 
-
     max_iter = NUM_EPOCHS * min(len(src_loader), len(tgt_loader))
     iter_num = 0
-    num_batches = min(len(src_loader), len(tgt_loader))
 
     print("Starting training...")
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -171,11 +169,14 @@ def train():
         total_cls_loss, total_adv_loss, total_entropy_loss = 0, 0, 0
         total_f_grad_norm, total_c_grad_norm, total_d_grad_norm = 0, 0, 0
         
+        # NEW: Count actual batches processed in this epoch
+        num_batches = 0
+        
         for batch_idx, (src_data, tgt_data) in enumerate(create_combined_loader(src_loader, tgt_loader)):
             
             src_wave_form, src_label = src_data
             tgt_wave_form, _ = tgt_data # Target labels are not used in unsupervised DA
-            print(f"Epoch {epoch}, Batch {batch_idx+1}/{num_batches}" ,end=",")
+            
             # --- Skip batch if data loading failed ---
             if "error" in src_label:
                 print(f"Skipping batch {batch_idx+1} due to data loading error in source.")
@@ -190,6 +191,9 @@ def train():
             if current_batch_size == 0: continue
 
             src, labels, tgt = src[:current_batch_size], labels[:current_batch_size], tgt[:current_batch_size]
+            
+            # Print progress (removed misleading /num_batches)
+            print(f"\rEpoch {epoch}, Batch {batch_idx+1}", end="", flush=True)
             
             F_opt.zero_grad()
             C_opt.zero_grad()
@@ -221,9 +225,14 @@ def train():
 
             iter_num += 1
             total_cls_loss += cls_loss.item()
+            num_batches += 1  # NEW: Increment actual batch count
 
         
         # --- NEW: Epoch-end logging and evaluation ---
+        if num_batches == 0:
+            print(f"\nEpoch [{epoch}/{NUM_EPOCHS}] - No valid batches processed!")
+            continue
+            
         avg_cls_loss = total_cls_loss / num_batches
         avg_adv_loss = total_adv_loss / num_batches
         avg_ent_loss = total_entropy_loss / num_batches if METHOD == 'CDAN-E' else 0.0
@@ -237,8 +246,8 @@ def train():
 
 
         print(
-            f"\nEpoch [{epoch}/{NUM_EPOCHS}] | "
-            f"Cls Loss: {avg_cls_loss:.4f}"
+            f"\nEpoch [{epoch}/{NUM_EPOCHS}] ({num_batches} batches) | "
+            f"Cls Loss: {avg_cls_loss:.4f}, "
             f"Src Acc: {source_acc:.2f}%, Tgt Acc: {target_acc:.2f}%"
         )
         print(
