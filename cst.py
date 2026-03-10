@@ -530,10 +530,11 @@ def train():
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
 
-    # Auto-generate visualizations
+    # Auto-generate visualizations (all devices)
     test_loaders = {src_device: src_test_loader, tgt_device: tgt_test_loader}
     run_visualization('cst', mfdwc_extractor, feature_extractor, cst_classifier,
-                      test_loaders, experiment_dir, csv_path=csv_path)
+                      test_loaders, experiment_dir, csv_path=csv_path,
+                      data_path=PATH, src_device=src_device)
 
 
 if __name__ == '__main__':

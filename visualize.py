@@ -52,6 +52,8 @@ TARGET_SAMPLE_RATE = 44100
 MFDWC_N_MELS = 60
 MFDWC_WAVELET = 'haar'
 
+ALL_TARGET_DEVICES = ['b', 'c', 's1', 's2', 's3']
+
 
 # ==============================================================================
 # Model loading
@@ -422,10 +424,47 @@ def plot_training_curves(csv_dir, output_dir, method=None):
 
 
 # ==============================================================================
+# Build test loaders for all devices
+# ==============================================================================
+def build_all_test_loaders(data_path, src_device='a', target_sr=TARGET_SAMPLE_RATE,
+                           batch_size=64):
+    """Build test DataLoaders for source + all target devices.
+
+    Calls data_split once (test_tgt_df already contains all devices) and
+    returns a dict mapping device_name -> DataLoader for the source and
+    each device in ALL_TARGET_DEVICES.
+    """
+    _, _, _, _, _, test_src_df, test_tgt_df = data_split(
+        src_device, ALL_TARGET_DEVICES[0], data_path=data_path
+    )
+    loaders = {}
+
+    # Source
+    src_test_ds = SimpleAudioDataset(
+        file_df=test_src_df[src_device], root=data_path, target_sr=target_sr
+    )
+    loaders[src_device] = DataLoader(
+        src_test_ds, batch_size=batch_size, shuffle=False, num_workers=4
+    )
+
+    # Targets
+    for tgt_dev in ALL_TARGET_DEVICES:
+        tgt_test_ds = SimpleAudioDataset(
+            file_df=test_tgt_df[tgt_dev], root=data_path, target_sr=target_sr
+        )
+        loaders[tgt_dev] = DataLoader(
+            tgt_test_ds, batch_size=batch_size, shuffle=False, num_workers=4
+        )
+
+    return loaders
+
+
+# ==============================================================================
 # Programmatic API — called from training scripts after training
 # ==============================================================================
 def run_visualization(method, mfdwc_extractor, feature_extractor, classifier,
-                      test_loaders, experiment_dir, csv_path=None):
+                      test_loaders, experiment_dir, csv_path=None, data_path=None,
+                      src_device='a', batch_size=64):
     """Generate all visualizations using already-loaded models and data loaders.
 
     Called automatically at the end of training scripts — no checkpoint reloading.
@@ -439,10 +478,29 @@ def run_visualization(method, mfdwc_extractor, feature_extractor, classifier,
                       e.g. {'a': src_test_loader, 'b': tgt_test_loader}
         experiment_dir: path to experiment output directory
         csv_path: path to training CSV log file (optional, for training curves)
+        data_path: path to TAU dataset root (optional). When provided and
+                   test_loaders does not cover all devices, missing device
+                   loaders are built automatically so that plots contain
+                   all devices.
+        src_device: source device name (default: 'a')
+        batch_size: batch size for any auto-built loaders (default: 64)
     """
     device = next(feature_extractor.parameters()).device
     output_dir = os.path.join(experiment_dir, 'plots')
     os.makedirs(output_dir, exist_ok=True)
+
+    # Auto-build loaders for missing devices when data_path is provided
+    if data_path:
+        all_devices = [src_device] + ALL_TARGET_DEVICES
+        missing = [d for d in all_devices if d not in test_loaders]
+        if missing:
+            print(f"Building test loaders for missing devices: {missing}")
+            all_loaders = build_all_test_loaders(
+                data_path, src_device=src_device,
+                batch_size=batch_size
+            )
+            for d in missing:
+                test_loaders[d] = all_loaders[d]
 
     print(f"\n{'='*60}")
     print(f"Generating post-training visualizations...")
@@ -460,6 +518,19 @@ def run_visualization(method, mfdwc_extractor, feature_extractor, classifier,
         n = len(results[dev_name]['true_labels'])
         acc = 100.0 * (results[dev_name]['predictions'] == results[dev_name]['true_labels']).mean()
         print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+    # Overall accuracy summary
+    all_true = np.concatenate([r['true_labels'] for r in results.values()])
+    all_pred = np.concatenate([r['predictions'] for r in results.values()])
+    print(f"\n  Overall accuracy ({len(all_true)} samples): "
+          f"{100.0 * (all_pred == all_true).mean():.2f}%")
+
+    tgt_results = {k: v for k, v in results.items() if k != src_device}
+    if tgt_results:
+        tgt_true = np.concatenate([r['true_labels'] for r in tgt_results.values()])
+        tgt_pred = np.concatenate([r['predictions'] for r in tgt_results.values()])
+        print(f"  Target-only accuracy ({len(tgt_true)} samples): "
+              f"{100.0 * (tgt_pred == tgt_true).mean():.2f}%")
 
     # t-SNE (CNN features)
     print("\nGenerating t-SNE plots (CNN features)...")
@@ -510,8 +581,8 @@ def parse_args():
                         help='Path to TAU dataset root')
     parser.add_argument('--src-device', type=str, default='a',
                         help='Source device (default: a)')
-    parser.add_argument('--devices', type=str, default='b',
-                        help='Comma-separated target devices to evaluate (e.g. b,c,s1)')
+    parser.add_argument('--devices', type=str, default='b,c,s1,s2,s3',
+                        help='Comma-separated target devices to evaluate (default: b,c,s1,s2,s3)')
     parser.add_argument('--batch-size', type=int, default=64,
                         help='Batch size for inference (default: 64)')
     parser.add_argument('--csv-dir', type=str, default=None,
@@ -567,12 +638,12 @@ def main():
     )
 
     # Build test dataloaders for source + each target
-    loaders = {}
-
-    # Source test loader (use first target device for data_split call)
-    _, _, _, _, _, test_src_df, _ = data_split(
+    _, _, _, _, _, test_src_df, test_tgt_df = data_split(
         args.src_device, tgt_devices[0], data_path=args.data_path
     )
+    loaders = {}
+
+    # Source test loader
     src_test_ds = SimpleAudioDataset(
         file_df=test_src_df[args.src_device],
         root=args.data_path, target_sr=TARGET_SAMPLE_RATE
@@ -581,11 +652,8 @@ def main():
         src_test_ds, batch_size=args.batch_size, shuffle=False, num_workers=4
     )
 
-    # Target test loaders
+    # Target test loaders (test_tgt_df already has all devices)
     for tgt_dev in tgt_devices:
-        _, _, _, _, _, _, test_tgt_df = data_split(
-            args.src_device, tgt_dev, data_path=args.data_path
-        )
         tgt_test_ds = SimpleAudioDataset(
             file_df=test_tgt_df[tgt_dev],
             root=args.data_path, target_sr=TARGET_SAMPLE_RATE
@@ -605,6 +673,19 @@ def main():
         n = len(results[dev_name]['true_labels'])
         acc = 100.0 * (results[dev_name]['predictions'] == results[dev_name]['true_labels']).mean()
         print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+    # Overall accuracy summary
+    all_true = np.concatenate([r['true_labels'] for r in results.values()])
+    all_pred = np.concatenate([r['predictions'] for r in results.values()])
+    overall_acc = 100.0 * (all_pred == all_true).mean()
+    print(f"\n  Overall accuracy ({len(all_true)} samples): {overall_acc:.2f}%")
+
+    tgt_results = {k: v for k, v in results.items() if k != args.src_device}
+    if tgt_results:
+        tgt_true = np.concatenate([r['true_labels'] for r in tgt_results.values()])
+        tgt_pred = np.concatenate([r['predictions'] for r in tgt_results.values()])
+        tgt_acc = 100.0 * (tgt_pred == tgt_true).mean()
+        print(f"  Target-only accuracy ({len(tgt_true)} samples): {tgt_acc:.2f}%")
 
     # --- Generate plots ---
     print("\nGenerating t-SNE plots (CNN features)...")
