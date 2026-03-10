@@ -1,0 +1,2 @@
+[Timer] Epoch 1/100 took 1187.8s | Avg: 1187.8s/epoch | Elapsed: 19m 47s | ETA: 2026-03-12 09:17:56 (~32h 39m 54s remaining)
+Total Time 32h 59m 54s

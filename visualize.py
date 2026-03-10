@@ -84,7 +84,8 @@ def load_models(method, checkpoint_dir, device):
 
     feature_extractor = FeatureExtractor().to(device)
     fe_ckpt = torch.load(fe_path, map_location=device, weights_only=False)
-    feature_extractor.load_state_dict(fe_ckpt['model_state_dict'])
+    fe_state = fe_ckpt['model_state_dict'] if isinstance(fe_ckpt, dict) and 'model_state_dict' in fe_ckpt else fe_ckpt
+    feature_extractor.load_state_dict(fe_state)
 
     if method == 'cst':
         classifier = CST_Classifier(
@@ -99,7 +100,8 @@ def load_models(method, checkpoint_dir, device):
         ).to(device)
 
     cl_ckpt = torch.load(cl_path, map_location=device, weights_only=False)
-    classifier.load_state_dict(cl_ckpt['model_state_dict'])
+    cl_state = cl_ckpt['model_state_dict'] if isinstance(cl_ckpt, dict) and 'model_state_dict' in cl_ckpt else cl_ckpt
+    classifier.load_state_dict(cl_state)
 
     mfdwc_extractor.eval()
     feature_extractor.eval()
@@ -213,7 +215,7 @@ def plot_tsne(features_dict, output_dir, tag=''):
         all_domains = all_domains[idx]
 
     print(f"  Running t-SNE on {len(all_feats)} samples...")
-    tsne = TSNE(n_components=2, perplexity=30, n_iter=1000, random_state=42)
+    tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
     coords = tsne.fit_transform(all_feats)
 
     suffix = f'_{tag}' if tag else ''
