@@ -297,6 +297,42 @@ class cnn_GVB(nn.Module):
         class_output = self.classifier(x)
         bridge_output = self.bridge(x)
         return  class_output, bridge_output
+
+
+class CST_Classifier(nn.Module):
+    """
+    Bottleneck + Classification Head for CST domain adaptation.
     
+    Takes flattened CNN features and produces both logits and intermediate
+    embeddings. CST's kernel regression operates on the embeddings, while
+    the classification head produces logits for cross-entropy and Tsallis losses.
+    
+    Architecture: Linear→BN→ReLU (bottleneck) → Linear (head)
+    Returns: (logits, embeddings)
+    """
+    def __init__(self, num_classes=10, flattened_size=384, bottleneck_dim=256):
+        super(CST_Classifier, self).__init__()
+        self.bottleneck = nn.Sequential(
+            nn.Linear(flattened_size, bottleneck_dim),
+            nn.BatchNorm1d(bottleneck_dim),
+            nn.ReLU()
+        )
+        self.head = nn.Linear(bottleneck_dim, num_classes)
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.uniform_(m.weight, -0.1, 0.1)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        embeddings = self.bottleneck(x)
+        logits = self.head(embeddings)
+        return logits, embeddings
 def calc_coeff(iter_num, high=1.0, low=0.0, alpha=10.0, max_iter=10000.0):
     return np.float64(2.0 * (high - low) / (1.0 + np.exp(-alpha*iter_num / max_iter)) - (high - low) + low)
