@@ -16,6 +16,7 @@ from models import Feature_extractor as FeatureExtractor
 from models import Classifier_no_weights as Classifier 
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 from training_timer import TrainingTimer
+from visualize import run_visualization
 
 # --- Configuration and Hyperparameters ---
 METHOD = 'cnn'
@@ -25,7 +26,7 @@ output_csv_path = 'training_results_dcase_cnn.csv'
 src_device = 'a'
 
 # All target devices for evaluation
-ALL_TARGET_DEVICES = ['b', 'c', 's1', 's2', 's3', 's4', 's5', 's6']
+ALL_TARGET_DEVICES = ['b', 'c', 's1', 's2', 's3']
 
 TARGET_SAMPLE_RATE = 44100
 NUM_CLASS = 10
@@ -339,6 +340,11 @@ def train():
     print(f"\nTraining finished!")
     print(f"Best avg target accuracy: {best_avg_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
+
+    # Auto-generate visualizations
+    test_loaders = {src_device: src_test_loader, **per_device_test_loaders}
+    run_visualization('baseline', mfdwc_extractor, feature_extractor, classifier,
+                      test_loaders, experiment_dir, csv_path=csv_path)
 
 if __name__ == '__main__':
     train()

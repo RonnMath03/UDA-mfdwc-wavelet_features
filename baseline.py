@@ -16,6 +16,7 @@ from models import Feature_extractor as FeatureExtractor
 from models import Classifier_no_weights as Classifier 
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 from training_timer import TrainingTimer
+from visualize import run_visualization
 
 # --- CHANGED: Configuration and Hyperparameters updated for new data loading logic ---
 METHOD = 'cnn' # 'CDAN' or 'CDAN-E'
@@ -319,6 +320,11 @@ def train():
     print(f"\nTraining finished!")
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
+
+    # Auto-generate visualizations
+    test_loaders = {src_device: src_test_loader, tgt_device: tgt_test_loader}
+    run_visualization('baseline', mfdwc_extractor, feature_extractor, classifier,
+                      test_loaders, experiment_dir, csv_path=csv_path)
 
 if __name__ == '__main__':
     train()

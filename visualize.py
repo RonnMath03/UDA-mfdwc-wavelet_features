@@ -420,6 +420,78 @@ def plot_training_curves(csv_dir, output_dir, method=None):
 
 
 # ==============================================================================
+# Programmatic API — called from training scripts after training
+# ==============================================================================
+def run_visualization(method, mfdwc_extractor, feature_extractor, classifier,
+                      test_loaders, experiment_dir, csv_path=None):
+    """Generate all visualizations using already-loaded models and data loaders.
+
+    Called automatically at the end of training scripts — no checkpoint reloading.
+
+    Args:
+        method: 'baseline', 'grl', or 'cst'
+        mfdwc_extractor: MFDWCFeatureExtractor (already on device)
+        feature_extractor: Feature_extractor (already on device)
+        classifier: Classifier_no_weights or CST_Classifier (already on device)
+        test_loaders: dict mapping device_name -> DataLoader
+                      e.g. {'a': src_test_loader, 'b': tgt_test_loader}
+        experiment_dir: path to experiment output directory
+        csv_path: path to training CSV log file (optional, for training curves)
+    """
+    device = next(feature_extractor.parameters()).device
+    output_dir = os.path.join(experiment_dir, 'plots')
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"Generating post-training visualizations...")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}")
+
+    # Extract features and predictions for all devices
+    print("\nExtracting features and predictions...")
+    results = {}
+    for dev_name, loader in test_loaders.items():
+        print(f"  Processing device '{dev_name}'...")
+        results[dev_name] = extract_features_and_predictions(
+            mfdwc_extractor, feature_extractor, classifier, loader, device, method=method
+        )
+        n = len(results[dev_name]['true_labels'])
+        acc = 100.0 * (results[dev_name]['predictions'] == results[dev_name]['true_labels']).mean()
+        print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+    # t-SNE (CNN features)
+    print("\nGenerating t-SNE plots (CNN features)...")
+    plot_tsne(results, output_dir, tag='')
+
+    # CST: extra t-SNE on bottleneck embeddings
+    if method == 'cst' and any(r['embeddings'] is not None for r in results.values()):
+        print("Generating t-SNE plots (CST bottleneck embeddings)...")
+        plot_tsne(results, output_dir, tag='embeddings')
+
+    # Confusion matrices
+    print("\nGenerating confusion matrices...")
+    for dev_name, res in results.items():
+        plot_confusion_matrix(res['true_labels'], res['predictions'], dev_name, output_dir)
+
+    # Per-class accuracy bar chart
+    print("\nGenerating per-class accuracy chart...")
+    plot_per_class_accuracy(results, output_dir)
+
+    # Classification reports
+    print("\nGenerating classification reports...")
+    for dev_name, res in results.items():
+        save_classification_report(res['true_labels'], res['predictions'], dev_name, output_dir)
+
+    # Training curves from CSV
+    if csv_path and os.path.isfile(csv_path):
+        csv_dir = os.path.dirname(csv_path)
+        print(f"\nPlotting training curves from {csv_dir}...")
+        plot_training_curves(csv_dir, output_dir, method=method)
+
+    print(f"\nAll visualizations saved to {output_dir}")
+
+
+# ==============================================================================
 # Main CLI
 # ==============================================================================
 def parse_args():

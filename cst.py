@@ -20,6 +20,7 @@ from models import Feature_extractor as FeatureExtractor
 from models import CST_Classifier
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 from training_timer import TrainingTimer
+from visualize import run_visualization
 
 
 # ==============================================================================
@@ -528,6 +529,11 @@ def train():
     print(f"\nTraining finished!")
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
+
+    # Auto-generate visualizations
+    test_loaders = {src_device: src_test_loader, tgt_device: tgt_test_loader}
+    run_visualization('cst', mfdwc_extractor, feature_extractor, cst_classifier,
+                      test_loaders, experiment_dir, csv_path=csv_path)
 
 
 if __name__ == '__main__':

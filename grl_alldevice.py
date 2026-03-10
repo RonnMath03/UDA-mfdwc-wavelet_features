@@ -21,6 +21,7 @@ from models import Classifier_no_weights as Classifier
 from models import Discriminator_no_weights as AdversarialNetwork
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 from training_timer import TrainingTimer
+from visualize import run_visualization
 
 # --- Configuration updated for GRL method with MFDWC ---
 METHOD = 'GRL'
@@ -28,7 +29,7 @@ PATH = '/DATA/G3/Datasets/archive/Original_split/TAU-urban-acoustic-scenes-2020-
 src_device = 'a'
 
 # All target devices combined
-ALL_TARGET_DEVICES = ['b', 'c', 's1', 's2', 's3', 's4', 's5', 's6']
+ALL_TARGET_DEVICES = ['b', 'c', 's1', 's2', 's3']
 # Allow override from command line: pass 'all' or specific devices comma-separated
 if len(sys.argv) > 1:
     if sys.argv[1] == 'all':
@@ -420,6 +421,11 @@ def train():
     print(f"\nTraining finished!")
     print(f"Best avg target accuracy: {best_avg_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
+
+    # Auto-generate visualizations
+    test_loaders = {src_device: src_test_loader, **per_device_test_loaders}
+    run_visualization('grl', mfdwc_extractor, feature_extractor, classifier,
+                      test_loaders, experiment_dir, csv_path=csv_path)
 
 
 if __name__ == '__main__':

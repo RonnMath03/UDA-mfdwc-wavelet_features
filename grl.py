@@ -21,6 +21,7 @@ from models import Classifier_no_weights as Classifier
 from models import Discriminator_no_weights as AdversarialNetwork
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
 from training_timer import TrainingTimer
+from visualize import run_visualization
 
 # --- Configuration updated for GRL method with MFDWC ---
 METHOD = 'GRL'
@@ -360,6 +361,11 @@ def train():
     print(f"\nTraining finished!")
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
+
+    # Auto-generate visualizations
+    test_loaders = {src_device: src_test_loader, tgt_device: tgt_test_loader}
+    run_visualization('grl', mfdwc_extractor, feature_extractor, classifier,
+                      test_loaders, experiment_dir, csv_path=csv_path)
 
 
 if __name__ == '__main__':
