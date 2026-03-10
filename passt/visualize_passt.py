@@ -1,5 +1,10 @@
 """
-Post-training visualization and evaluation for PaSST DANN+GRL experiments.
+Post-training visualization and evaluation for PaSST experiments.
+
+Supports three model types via --model-type:
+  - dann       : DANN+GRL (PASSETFeatureExtractor + Classifier + Discriminator)
+  - source_only: Source-only baseline (PaSST + simple classifier, no adaptation)
+  - cst        : Cycle Self-Training (AudioClassifier with bottleneck)
 
 Generates: t-SNE plots, confusion matrices, per-class accuracy bars,
 classification reports, and training curve plots from JSON history.
@@ -10,18 +15,36 @@ Data loading uses data.py (from UDA-mfdwc-wavelet_features) which reads
 the dataset via meta.csv / fold1_evaluate.csv splits, so the dataset no
 longer needs to be manually organised into source/target folders.
 
+Label mapping: all PaSST-based models use **alphabetically sorted** scene
+labels (airport=0, bus=1, metro=2, ..., tram=9).  This differs from
+data.py's custom label_keys ordering.  The script uses DEFAULT_LABEL_TO_IDX
+for correct alignment; source-only checkpoints that embed their own mapping
+are honoured automatically.
+
 Usage examples:
-    # Full evaluation (--data-script-dir points to the folder containing data.py)
-    python visualize_passt.py --checkpoint dann_audio_dcase.pth \
+    # DANN+GRL evaluation (default)
+    python visualize_passt.py --model-type dann --checkpoint passt_grl.pth \
         --data-path /DATA/G3/Datasets/.../TAU-urban-acoustic-scenes-2020-mobile-development \
         --data-script-dir /path/to/UDA-mfdwc-wavelet_features \
         --devices b,c,s1,s2,s3
 
-    # Plot training curves only (no model loading needed)
+    # Source-only baseline evaluation
+    python visualize_passt.py --model-type source_only --checkpoint passt_baseline.pth \
+        --data-path /DATA/G3/Datasets/.../TAU-urban-acoustic-scenes-2020-mobile-development \
+        --data-script-dir /path/to/UDA-mfdwc-wavelet_features \
+        --devices b,c,s1,s2,s3
+
+    # Cycle Self-Training evaluation
+    python visualize_passt.py --model-type cst --checkpoint passt_cst.pth \
+        --data-path /DATA/G3/Datasets/.../TAU-urban-acoustic-scenes-2020-mobile-development \
+        --data-script-dir /path/to/UDA-mfdwc-wavelet_features \
+        --devices b,c,s1,s2,s3
+
+    # Plot training curves only (DANN, no model loading needed)
     python visualize_passt.py --plot-curves-only --history-json history.json
 
     # Custom output directory
-    python visualize_passt.py --checkpoint dann_audio_dcase.pth \
+    python visualize_passt.py --model-type dann --checkpoint passt_grl.pth \
         --data-path /DATA/G3/Datasets/.../TAU-urban-acoustic-scenes-2020-mobile-development \
         --data-script-dir /path/to/UDA-mfdwc-wavelet_features \
         --devices b,c,s1,s2,s3 --output-dir my_plots/
@@ -44,6 +67,15 @@ import matplotlib.pyplot as plt
 
 TARGET_SAMPLE_RATE = 32000
 MAX_LEN_SECONDS = 10
+
+# All PaSST-based models (DANN, source-only, CST) use alphabetically sorted labels.
+# This differs from data.py's label_keys which has a custom (non-alphabetical) order.
+SCENE_LABELS = sorted([
+    'airport', 'bus', 'metro', 'metro_station', 'park',
+    'public_square', 'shopping_mall', 'street_pedestrian',
+    'street_traffic', 'tram',
+])
+DEFAULT_LABEL_TO_IDX = {label: i for i, label in enumerate(SCENE_LABELS)}
 
 
 # ==============================================================================
@@ -118,6 +150,66 @@ class Discriminator(nn.Module):
 
 
 # ==============================================================================
+# Model definitions — Source-only baseline (from source_only_dcase_w_ds.ipynb)
+# ==============================================================================
+class SourceOnlyFeatureExtractor(nn.Module):
+    """PaSST feature extractor for source-only baseline (768-dim output, no adaptation)."""
+    def __init__(self):
+        super(SourceOnlyFeatureExtractor, self).__init__()
+        self.model = get_basic_model(mode="embed_only")
+        self.model.eval()
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        with torch.no_grad():
+            features = self.model(x)
+        return features
+
+
+class SourceOnlyClassifier(nn.Module):
+    """Classifier for source-only baseline (768 -> 128 -> num_classes)."""
+    def __init__(self, input_size=768, num_classes=10):
+        super(SourceOnlyClassifier, self).__init__()
+        self.layer = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, h):
+        return self.layer(h)
+
+
+# ==============================================================================
+# Model definitions — CST / Cycle Self-Training (from cst_dcase.ipynb)
+# ==============================================================================
+class CSTAudioClassifier(nn.Module):
+    """AudioClassifier for CST: backbone + bottleneck + head.
+
+    forward() returns (outputs, embeddings) where embeddings are 256-dim.
+    """
+    def __init__(self, num_classes=10, bottleneck_dim=256):
+        super(CSTAudioClassifier, self).__init__()
+        self.backbone = get_basic_model(mode="embed_only")
+        self.bottleneck = nn.Sequential(
+            nn.Linear(768, bottleneck_dim),
+            nn.BatchNorm1d(bottleneck_dim),
+            nn.ReLU(),
+        )
+        self.head = nn.Linear(bottleneck_dim, num_classes)
+
+    def forward(self, x):
+        features = self.backbone(x)
+        embeddings = self.bottleneck(features)
+        outputs = self.head(embeddings)
+        return outputs, embeddings
+
+
+# ==============================================================================
 # Dataset (adapted for DataFrame-based loading via data.py)
 # ==============================================================================
 class AudioDataset(Dataset):
@@ -153,13 +245,31 @@ class AudioDataset(Dataset):
 # Model loading
 # ==============================================================================
 def load_models(checkpoint_path, num_classes, device):
-    """Load PaSST feature extractor, classifier, and discriminator from checkpoint."""
-    feature_extractor = PASSETFeatureExtractor().to(device)
-    classifier = Classifier(input_size=256, num_classes=num_classes).to(device)
-    discriminator = Discriminator(input_size=256).to(device)
+    """Load PaSST feature extractor, classifier, and discriminator from checkpoint.
 
+    Auto-detects the checkpoint architecture:
+      - Keys starting with 'passt_model.' + 'adaptation_layers.' → PASSETFeatureExtractor (256-dim)
+      - Keys starting with 'model.' without adaptation_layers → SourceOnlyFeatureExtractor (768-dim)
+    """
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    feature_extractor.load_state_dict(ckpt['feature_extractor_state_dict'])
+    fe_sd = ckpt['feature_extractor_state_dict']
+
+    has_adaptation = any(k.startswith('adaptation_layers.') for k in fe_sd)
+    has_passt_model = any(k.startswith('passt_model.') for k in fe_sd)
+
+    if has_adaptation and has_passt_model:
+        # Full DANN feature extractor with adaptation layers (768 → 256)
+        feature_extractor = PASSETFeatureExtractor().to(device)
+        feat_dim = 256
+    else:
+        # Plain PaSST wrapper (768-dim output, no adaptation layers)
+        feature_extractor = SourceOnlyFeatureExtractor().to(device)
+        feat_dim = 768
+
+    classifier = Classifier(input_size=feat_dim, num_classes=num_classes).to(device)
+    discriminator = Discriminator(input_size=feat_dim).to(device)
+
+    feature_extractor.load_state_dict(fe_sd)
     classifier.load_state_dict(ckpt['classifier_state_dict'])
     discriminator.load_state_dict(ckpt['discriminator_state_dict'])
 
@@ -167,8 +277,42 @@ def load_models(checkpoint_path, num_classes, device):
     classifier.eval()
     discriminator.eval()
 
-    print(f"Loaded checkpoint from {checkpoint_path}")
+    print(f"Loaded DANN checkpoint from {checkpoint_path} (feat_dim={feat_dim})")
     return feature_extractor, classifier, discriminator
+
+
+def load_source_only_models(checkpoint_path, num_classes, device):
+    """Load source-only baseline feature extractor and classifier from checkpoint."""
+    feature_extractor = SourceOnlyFeatureExtractor().to(device)
+    classifier = SourceOnlyClassifier(input_size=768, num_classes=num_classes).to(device)
+
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    feature_extractor.load_state_dict(ckpt['feature_extractor_state_dict'])
+    classifier.load_state_dict(ckpt['classifier_state_dict'])
+
+    feature_extractor.eval()
+    classifier.eval()
+
+    print(f"Loaded source-only checkpoint from {checkpoint_path}")
+    return feature_extractor, classifier
+
+
+def load_cst_model(checkpoint_path, num_classes, device):
+    """Load CST AudioClassifier from checkpoint (flat state_dict)."""
+    model = CSTAudioClassifier(num_classes=num_classes).to(device)
+
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Handle both bare state_dict and wrapped formats
+    if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+        state_dict = ckpt['state_dict']
+    else:
+        state_dict = ckpt
+    model.load_state_dict(state_dict)
+
+    model.eval()
+
+    print(f"Loaded CST checkpoint from {checkpoint_path}")
+    return model
 
 
 # ==============================================================================
@@ -230,6 +374,59 @@ def extract_features_and_predictions(feature_extractor, classifier, dataloader, 
     }
 
 
+def extract_features_source_only(feature_extractor, classifier, dataloader, device):
+    """Run inference for source-only baseline (768-dim PaSST features)."""
+    all_features = []
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for audio, labels, _ in dataloader:
+            audio = audio.to(device)
+            labels_t = torch.tensor(labels, dtype=torch.long) if not isinstance(labels, torch.Tensor) else labels
+
+            features = feature_extractor(audio)
+            logits = classifier(features)
+            preds = logits.argmax(dim=1)
+
+            all_features.append(features.cpu().numpy())
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(labels_t.numpy())
+
+    return {
+        'features': np.concatenate(all_features, axis=0),
+        'predictions': np.concatenate(all_preds, axis=0),
+        'true_labels': np.concatenate(all_labels, axis=0),
+        'embeddings': None,
+    }
+
+
+def extract_features_cst(model, dataloader, device):
+    """Run inference for CST model (256-dim bottleneck embeddings as features)."""
+    all_features = []
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for audio, labels, _ in dataloader:
+            audio = audio.to(device)
+            labels_t = torch.tensor(labels, dtype=torch.long) if not isinstance(labels, torch.Tensor) else labels
+
+            outputs, embeddings = model(audio)
+            preds = outputs.argmax(dim=1)
+
+            all_features.append(embeddings.cpu().numpy())
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(labels_t.numpy())
+
+    return {
+        'features': np.concatenate(all_features, axis=0),
+        'predictions': np.concatenate(all_preds, axis=0),
+        'true_labels': np.concatenate(all_labels, axis=0),
+        'embeddings': None,
+    }
+
+
 # ==============================================================================
 # t-SNE plots  (matches visualize.py styling exactly)
 # ==============================================================================
@@ -255,7 +452,7 @@ def plot_tsne(features_dict, class_names, output_dir, tag=''):
         all_domains = all_domains[idx]
 
     print(f"  Running t-SNE on {len(all_feats)} samples...")
-    tsne = TSNE(n_components=2, perplexity=30, n_iter=1000, random_state=42)
+    tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
     coords = tsne.fit_transform(all_feats)
 
     suffix = f'_{tag}' if tag else ''
@@ -446,10 +643,13 @@ def plot_training_curves(history_path, output_dir):
 # ==============================================================================
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Post-training visualization for PaSST DANN+GRL experiments',
+        description='Post-training visualization for PaSST experiments (DANN, source-only, CST)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    parser.add_argument('--model-type', type=str, default='dann',
+                        choices=['dann', 'source_only', 'cst'],
+                        help='Model type: dann, source_only, or cst (default: dann)')
     parser.add_argument('--checkpoint', type=str, default='dann_audio_dcase.pth',
                         help='Path to .pth checkpoint (default: dann_audio_dcase.pth)')
     parser.add_argument('--data-path', type=str,
@@ -500,9 +700,9 @@ def main():
         print("Error: --data-path and --data-script-dir are required for full evaluation mode.")
         sys.exit(1)
 
-    # Import data.py from the specified directory
+    # Import data.py from the specified directory (only for data_split file lists)
     sys.path.insert(0, args.data_script_dir)
-    from data import data_split, label_keys
+    from data import data_split
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tgt_devices = [d.strip() for d in args.devices.split(',')]
@@ -512,15 +712,47 @@ def main():
     print(f"Device: {device}")
     print(f"Output: {output_dir}")
 
-    # Class labels from data.py
-    label_to_idx = label_keys
+    # Label mapping — all PaSST models use alphabetically sorted labels.
+    # For source_only, the checkpoint stores the mapping; use it if available.
+    label_to_idx = DEFAULT_LABEL_TO_IDX
+    if args.model_type == 'source_only':
+        ckpt_peek = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        if isinstance(ckpt_peek, dict) and 'label_to_idx' in ckpt_peek:
+            label_to_idx = ckpt_peek['label_to_idx']
+            print(f"Using label_to_idx from checkpoint: {label_to_idx}")
+        del ckpt_peek
+
     idx_to_label = {v: k for k, v in label_to_idx.items()}
     class_names = [idx_to_label[i] for i in range(len(idx_to_label))]
     num_classes = len(class_names)
     print(f"Classes ({num_classes}): {class_names}")
 
-    # Load models
-    feat_ext, classifier, _ = load_models(args.checkpoint, num_classes, device)
+    # Load models based on model type (auto-detect if not explicitly set)
+    model_type = args.model_type
+    if model_type == 'dann':
+        # Auto-detect: peek at checkpoint to see if it's really DANN, source_only, or CST
+        ckpt_peek = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        if isinstance(ckpt_peek, dict) and 'feature_extractor_state_dict' in ckpt_peek:
+            if 'discriminator_state_dict' in ckpt_peek:
+                model_type = 'dann'
+            else:
+                model_type = 'source_only'
+        else:
+            # Bare state_dict or dict without feature_extractor_state_dict → CST
+            sd = ckpt_peek.get('state_dict', ckpt_peek) if isinstance(ckpt_peek, dict) else ckpt_peek
+            if any(k.startswith('backbone.') for k in sd):
+                model_type = 'cst'
+        del ckpt_peek
+        if model_type != args.model_type:
+            print(f"Auto-detected model type: {model_type} (override with --model-type)")
+    print(f"Model type: {model_type}")
+
+    if model_type == 'dann':
+        feat_ext, cls_head, _ = load_models(args.checkpoint, num_classes, device)
+    elif model_type == 'source_only':
+        feat_ext, cls_head = load_source_only_models(args.checkpoint, num_classes, device)
+    elif model_type == 'cst':
+        cst_model = load_cst_model(args.checkpoint, num_classes, device)
 
     # Split dataset via data.py (test splits are device-independent)
     _, _, _, _, _, test_src_df, test_tgt_df = data_split(
@@ -539,12 +771,36 @@ def main():
     results = {}
     for dev_name, loader in loaders.items():
         print(f"  Processing device '{dev_name}'...")
-        results[dev_name] = extract_features_and_predictions(
-            feat_ext, classifier, loader, device
-        )
+        if model_type == 'cst':
+            results[dev_name] = extract_features_cst(cst_model, loader, device)
+        elif model_type == 'source_only':
+            results[dev_name] = extract_features_source_only(feat_ext, cls_head, loader, device)
+        else:
+            results[dev_name] = extract_features_and_predictions(feat_ext, cls_head, loader, device)
         n = len(results[dev_name]['true_labels'])
         acc = 100.0 * (results[dev_name]['predictions'] == results[dev_name]['true_labels']).mean()
         print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+    # Overall accuracy across all devices
+    all_true = np.concatenate([r['true_labels'] for r in results.values()])
+    all_pred = np.concatenate([r['predictions'] for r in results.values()])
+    overall_acc = 100.0 * (all_pred == all_true).mean()
+    print(f"\n  Overall accuracy ({len(all_true)} samples): {overall_acc:.2f}%")
+
+    # Source-only / target-only aggregated accuracy
+    src_devs = {args.src_device}
+    tgt_results = {k: v for k, v in results.items() if k not in src_devs}
+    if tgt_results:
+        tgt_true = np.concatenate([r['true_labels'] for r in tgt_results.values()])
+        tgt_pred = np.concatenate([r['predictions'] for r in tgt_results.values()])
+        tgt_acc = 100.0 * (tgt_pred == tgt_true).mean()
+        print(f"  Target-only accuracy ({len(tgt_true)} samples): {tgt_acc:.2f}%")
+    src_results = {k: v for k, v in results.items() if k in src_devs}
+    if src_results:
+        src_true = np.concatenate([r['true_labels'] for r in src_results.values()])
+        src_pred = np.concatenate([r['predictions'] for r in src_results.values()])
+        src_acc = 100.0 * (src_pred == src_true).mean()
+        print(f"  Source-only accuracy ({len(src_true)} samples): {src_acc:.2f}%")
 
     # --- Generate plots ---
     print("\nGenerating t-SNE plots...")
