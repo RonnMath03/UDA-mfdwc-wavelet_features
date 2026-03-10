@@ -20,6 +20,7 @@ from models import Feature_extractor as FeatureExtractor
 from models import Classifier_no_weights as Classifier
 from models import Discriminator_no_weights as AdversarialNetwork
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
+from training_timer import TrainingTimer
 
 # --- Configuration updated for GRL method with MFDWC ---
 METHOD = 'GRL'
@@ -227,10 +228,12 @@ def train():
     max_iter = NUM_EPOCHS * min(len(src_loader), len(combined_tgt_loader))
     iter_num = 0
 
+    timer = TrainingTimer(NUM_EPOCHS)
     print(f"Starting training with GRL method and MFDWC features...")
     print(f"Adapting {src_device} -> [{tgt_label}] (all targets combined)")
     
     for epoch in range(1, NUM_EPOCHS + 1):
+        timer.start_epoch()
         mfdwc_extractor.eval()
         feature_extractor.train()
         classifier.train()
@@ -411,6 +414,9 @@ def train():
         csv_path = os.path.join(experiment_dir, f"training_results_grl_mfdwc_{src_device}-{tgt_label}.csv")
         pd.DataFrame(results_log).to_csv(csv_path, index=False)
 
+        timer.end_epoch(epoch, NUM_EPOCHS)
+
+    timer.summary()
     print(f"\nTraining finished!")
     print(f"Best avg target accuracy: {best_avg_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")

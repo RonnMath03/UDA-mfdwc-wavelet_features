@@ -19,6 +19,7 @@ import models
 from models import Feature_extractor as FeatureExtractor
 from models import CST_Classifier
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
+from training_timer import TrainingTimer
 
 
 # ==============================================================================
@@ -370,7 +371,9 @@ def train():
     print(f"  Pseudo-label threshold: {THRESHOLD}")
     print(f"  SpecAugment: freq_mask={FREQ_MASK_WIDTH}, time_mask={TIME_MASK_WIDTH}")
 
+    timer = TrainingTimer(NUM_EPOCHS)
     for epoch in range(1, NUM_EPOCHS + 1):
+        timer.start_epoch()
         mfdwc_extractor.eval()
         feature_extractor.train()
         cst_classifier.train()
@@ -519,6 +522,9 @@ def train():
         csv_path = os.path.join(experiment_dir, f"training_results_cst_mfdwc_{src_device}-{tgt_device}.csv")
         pd.DataFrame(results_log).to_csv(csv_path, index=False)
 
+        timer.end_epoch(epoch, NUM_EPOCHS)
+
+    timer.summary()
     print(f"\nTraining finished!")
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")

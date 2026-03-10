@@ -15,6 +15,7 @@ import models
 from models import Feature_extractor as FeatureExtractor 
 from models import Classifier_no_weights as Classifier 
 from mfdwc_extractor_with_flag import MFDWCFeatureExtractor
+from training_timer import TrainingTimer
 
 # --- CHANGED: Configuration and Hyperparameters updated for new data loading logic ---
 METHOD = 'cnn' # 'CDAN' or 'CDAN-E'
@@ -157,8 +158,10 @@ def train():
     max_iter = NUM_EPOCHS * min(len(src_loader), len(tgt_loader))
     iter_num = 0
 
+    timer = TrainingTimer(NUM_EPOCHS)
     print("Starting training...")
     for epoch in range(1, NUM_EPOCHS + 1):
+        timer.start_epoch()
         mfdwc_extractor.eval()
         feature_extractor.train()
         classifier.train()
@@ -310,6 +313,9 @@ def train():
         csv_path = os.path.join(experiment_dir, f"training_results_mfdwc-dcase-cnn_{src_device}-{tgt_device}.csv")
         pd.DataFrame(results_log).to_csv(csv_path, index=False)
 
+        timer.end_epoch(epoch, NUM_EPOCHS)
+
+    timer.summary()
     print(f"\nTraining finished!")
     print(f"Best target accuracy: {best_target_acc:.2f}% at epoch {best_epoch}")
     print(f"Results saved to {experiment_dir}")
