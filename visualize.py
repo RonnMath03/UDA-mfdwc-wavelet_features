@@ -18,6 +18,10 @@ Usage examples:
     python visualize.py --method cst --checkpoint-dir results/cst-mfdwc-a-b \
         --data-path /DATA/G3/Datasets/... --devices b
 
+    # Multi-model evaluation (each target device uses its own best model)
+    python visualize.py --method baseline --checkpoint-base-dir results/mfdwc-cnn/ \
+        --data-path /DATA/G3/Datasets/... --devices b,c,s1,s2,s3
+
     # Plot training curves only (no model loading needed)
     python visualize.py --csv-dir results/mfdwc-grl/csv_logs --plot-curves-only
 
@@ -125,6 +129,49 @@ def _find_checkpoint(directory, prefix):
             f"No checkpoint matching '{prefix}*.pth' found in {directory}"
         )
     return matches[0]
+
+
+def load_models_per_device(method, base_dir, src_device, device):
+    """Load per-device models from checkpoint subdirectories.
+
+    Scans base_dir for subdirectories matching '{src_device}-{tgt_device}'
+    (e.g. a-b/, a-c/) and loads each model independently.
+
+    Returns:
+        (mfdwc_extractor, models_dict) where models_dict maps
+        target_device_name -> (feature_extractor, classifier)
+    """
+    models_dict = {}
+    shared_mfdwc = None
+
+    # Pattern 1: subdirectories like a-b/, a-c/, a-s1/ inside base_dir
+    for entry in sorted(os.listdir(base_dir)):
+        subdir = os.path.join(base_dir, entry)
+        if not os.path.isdir(subdir):
+            continue
+        if not entry.startswith(f"{src_device}-"):
+            continue
+        tgt_name = entry[len(f"{src_device}-"):]
+        # Skip non-device dirs (e.g. csv_logs, plots)
+        if tgt_name not in ALL_TARGET_DEVICES:
+            continue
+        try:
+            mfdwc_ext, feat_ext, clf, _ = load_models(method, subdir, device)
+            models_dict[tgt_name] = (feat_ext, clf)
+            if shared_mfdwc is None:
+                shared_mfdwc = mfdwc_ext
+        except FileNotFoundError as e:
+            print(f"  Warning: skipping {entry}/ — {e}")
+
+    if not models_dict:
+        raise FileNotFoundError(
+            f"No per-device checkpoint subdirectories (e.g. {src_device}-b/) "
+            f"found in {base_dir}"
+        )
+
+    print(f"\nLoaded {len(models_dict)} per-device model(s): "
+          f"{list(models_dict.keys())}")
+    return shared_mfdwc, models_dict
 
 
 # ==============================================================================
@@ -577,6 +624,9 @@ def parse_args():
                         help='Training method (determines classifier type)')
     parser.add_argument('--checkpoint-dir', type=str,
                         help='Path to experiment directory with best_FE_*.pth and best_CL_*.pth')
+    parser.add_argument('--checkpoint-base-dir', type=str,
+                        help='Base directory with per-device subdirs (e.g. results/mfdwc-cnn/) '
+                             'for multi-model evaluation where each target device uses its own model')
     parser.add_argument('--data-path', type=str,
                         help='Path to TAU dataset root')
     parser.add_argument('--src-device', type=str, default='a',
@@ -600,6 +650,8 @@ def main():
     # Determine output directory
     if args.output_dir:
         output_dir = args.output_dir
+    elif args.checkpoint_base_dir:
+        output_dir = os.path.join(args.checkpoint_base_dir, 'plots_multi_model')
     elif args.checkpoint_dir:
         output_dir = os.path.join(args.checkpoint_dir, 'plots')
     elif args.csv_dir:
@@ -619,10 +671,138 @@ def main():
         print("Done.")
         return
 
-    # --- Full evaluation mode ---
+    # --- Multi-model evaluation mode (per-device best models) ---
+    if args.checkpoint_base_dir:
+        if not all([args.method, args.data_path]):
+            print("Error: --method and --data-path are required "
+                  "with --checkpoint-base-dir.")
+            sys.exit(1)
+
+        if not args.output_dir:
+            output_dir = os.path.join(args.checkpoint_base_dir, 'plots_multi_model')
+            os.makedirs(output_dir, exist_ok=True)
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        tgt_devices = [d.strip() for d in args.devices.split(',')]
+        print(f"Method: {args.method} (multi-model per-device)")
+        print(f"Source: {args.src_device}, Targets: {tgt_devices}")
+        print(f"Device: {device}")
+        print(f"Output: {output_dir}")
+
+        # Load per-device models
+        mfdwc_ext, models_dict = load_models_per_device(
+            args.method, args.checkpoint_base_dir, args.src_device, device
+        )
+
+        # Filter to requested devices
+        available = [d for d in tgt_devices if d in models_dict]
+        missing = [d for d in tgt_devices if d not in models_dict]
+        if missing:
+            print(f"Warning: no models found for devices {missing}, skipping them")
+        tgt_devices = available
+
+        if not tgt_devices:
+            print("Error: no per-device models matched the requested --devices.")
+            sys.exit(1)
+
+        # Build test loaders
+        loaders = build_all_test_loaders(
+            args.data_path, src_device=args.src_device,
+            batch_size=args.batch_size
+        )
+
+        # Pick the first available model for source device evaluation
+        first_tgt = tgt_devices[0]
+        src_fe, src_clf = models_dict[first_tgt]
+
+        # Extract features and predictions — each device uses its own model
+        print("\nExtracting features and predictions (per-device models)...")
+        results = {}
+
+        # Source device
+        print(f"  Processing source device '{args.src_device}' (using {args.src_device}-{first_tgt} model)...")
+        results[args.src_device] = extract_features_and_predictions(
+            mfdwc_ext, src_fe, src_clf, loaders[args.src_device], device, method=args.method
+        )
+        n = len(results[args.src_device]['true_labels'])
+        acc = 100.0 * (results[args.src_device]['predictions'] == results[args.src_device]['true_labels']).mean()
+        print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+        # Target devices — each with its own model
+        for tgt_dev in tgt_devices:
+            feat_ext, clf = models_dict[tgt_dev]
+            print(f"  Processing device '{tgt_dev}' (using {args.src_device}-{tgt_dev} model)...")
+            results[tgt_dev] = extract_features_and_predictions(
+                mfdwc_ext, feat_ext, clf, loaders[tgt_dev], device, method=args.method
+            )
+            n = len(results[tgt_dev]['true_labels'])
+            acc = 100.0 * (results[tgt_dev]['predictions'] == results[tgt_dev]['true_labels']).mean()
+            print(f"    {n} samples, accuracy: {acc:.2f}%")
+
+        # Overall accuracy summary
+        all_true = np.concatenate([r['true_labels'] for r in results.values()])
+        all_pred = np.concatenate([r['predictions'] for r in results.values()])
+        overall_acc = 100.0 * (all_pred == all_true).mean()
+        print(f"\n  Overall accuracy ({len(all_true)} samples): {overall_acc:.2f}%")
+
+        tgt_res = {k: v for k, v in results.items() if k != args.src_device}
+        if tgt_res:
+            tgt_true = np.concatenate([r['true_labels'] for r in tgt_res.values()])
+            tgt_pred = np.concatenate([r['predictions'] for r in tgt_res.values()])
+            tgt_acc = 100.0 * (tgt_pred == tgt_true).mean()
+            print(f"  Target-only accuracy ({len(tgt_true)} samples): {tgt_acc:.2f}%")
+
+        # --- Extract features using a single shared FE for t-SNE ---
+        # Per-device FEs live in different feature spaces, which causes t-SNE
+        # to trivially cluster by device rather than by class.  Using one
+        # shared FE puts all devices into the same feature space.
+        print("\nExtracting features for t-SNE (shared feature extractor)...")
+        tsne_results = {}
+        for dev_name in [args.src_device] + tgt_devices:
+            print(f"  Processing device '{dev_name}' (shared FE from "
+                  f"{args.src_device}-{first_tgt} model)...")
+            tsne_results[dev_name] = extract_features_and_predictions(
+                mfdwc_ext, src_fe, src_clf, loaders[dev_name], device,
+                method=args.method
+            )
+
+        # --- Generate plots ---
+        print("\nGenerating t-SNE plots (CNN features, shared FE)...")
+        plot_tsne(tsne_results, output_dir, tag='')
+
+        if args.method == 'cst' and any(r['embeddings'] is not None for r in tsne_results.values()):
+            print("Generating t-SNE plots (CST bottleneck embeddings, shared FE)...")
+            plot_tsne(tsne_results, output_dir, tag='embeddings')
+
+        print("\nGenerating confusion matrices...")
+        for dev_name, res in results.items():
+            plot_confusion_matrix(res['true_labels'], res['predictions'], dev_name, output_dir)
+
+        print("\nGenerating per-class accuracy chart...")
+        plot_per_class_accuracy(results, output_dir)
+
+        print("\nGenerating classification reports...")
+        for dev_name, res in results.items():
+            save_classification_report(res['true_labels'], res['predictions'], dev_name, output_dir)
+
+        # Training curves
+        csv_dir = args.csv_dir
+        if not csv_dir:
+            csv_logs_dir = os.path.join(args.checkpoint_base_dir, 'csv_logs')
+            if os.path.isdir(csv_logs_dir):
+                csv_dir = csv_logs_dir
+        if csv_dir:
+            print(f"\nPlotting training curves from {csv_dir}...")
+            plot_training_curves(csv_dir, output_dir, method=args.method)
+
+        print(f"\nAll outputs saved to {output_dir}")
+        print("Done.")
+        return
+
+    # --- Single-model full evaluation mode ---
     if not all([args.method, args.checkpoint_dir, args.data_path]):
         print("Error: --method, --checkpoint-dir, and --data-path are required "
-              "for full evaluation mode.")
+              "for full evaluation mode (or use --checkpoint-base-dir for multi-model).")
         sys.exit(1)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
